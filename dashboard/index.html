@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Scam Link Detector — Dashboard</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <h1>Scam Link Detector Dashboard</h1>
+  </header>
+
+  <main>
+    <section class="stats-row">
+      <div class="stat-card">
+        <span class="stat-value" id="reports-24h">–</span>
+        <span class="stat-label">Reports in last 24h</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-value" id="total-blocklist">–</span>
+        <span class="stat-label">URLs in blocklist</span>
+      </div>
+    </section>
+
+    <section class="chart-section">
+      <h2>Reports per hour (last 24h)</h2>
+      <canvas id="reports-chart" height="100"></canvas>
+    </section>
+
+    <section class="table-section">
+      <h2>Recent reported URLs</h2>
+      <table id="recent-table">
+        <thead>
+          <tr>
+            <th>URL</th>
+            <th>Reported at</th>
+          </tr>
+        </thead>
+        <tbody id="recent-table-body">
+          <tr><td colspan="2">Loading&hellip;</td></tr>
+        </tbody>
+      </table>
+    </section>
+  </main>
+
+  <!-- Firebase (compat SDK — no build step required) -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+  <script src="dashboard.js"></script>
+</body>
+</html>

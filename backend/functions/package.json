@@ -1,0 +1,20 @@
+{
+  "name": "scam-blocker-functions",
+  "description": "Cloud Functions backend for the Scam Link Detector extension",
+  "engines": {
+    "node": "18"
+  },
+  "main": "index.js",
+  "scripts": {
+    "serve": "firebase emulators:start --only functions",
+    "shell": "firebase functions:shell",
+    "deploy": "firebase deploy --only functions",
+    "logs": "firebase functions:log"
+  },
+  "dependencies": {
+    "firebase-admin": "^12.1.0",
+    "firebase-functions": "^4.9.0",
+    "cors": "^2.8.5"
+  },
+  "private": true
+}

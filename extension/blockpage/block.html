@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Warning: Dangerous Site Blocked</title>
+  <link rel="stylesheet" href="block.css" />
+</head>
+<body>
+  <main class="card">
+    <div class="warning-icon">&#9888;</div>
+    <h1>This site may be a scam</h1>
+    <p class="subtitle">Scam Link Detector blocked this page to keep you safe.</p>
+
+    <div class="url-box">
+      <span class="url-label">Blocked URL</span>
+      <span id="blocked-url" class="url-value"></span>
+    </div>
+
+    <div class="reasons-box">
+      <span class="reasons-label">Why was this blocked?</span>
+      <ul id="reasons-list"></ul>
+    </div>
+
+    <div class="actions">
+      <button id="go-back-btn" type="button" class="btn btn-primary">Go back</button>
+    </div>
+  </main>
+
+  <script src="block.js"></script>
+</body>
+</html>

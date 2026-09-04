@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Scam Link Detector</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <header>
+    <h1>Scam Link Detector</h1>
+  </header>
+
+  <main>
+    <section id="status-card" class="status status--unknown">
+      <div class="status-icon" id="status-icon">?</div>
+      <div class="status-text">
+        <p class="status-label" id="status-label">Checking this page&hellip;</p>
+        <p class="status-url" id="status-url"></p>
+      </div>
+    </section>
+
+    <ul id="reasons-list" class="reasons-list" hidden></ul>
+
+    <button id="report-btn" type="button">Report this site as scam</button>
+    <p id="report-message" class="report-message" hidden></p>
+  </main>
+
+  <footer>
+    <a id="dashboard-link" href="#" target="_blank" rel="noopener">Open Dashboard</a>
+  </footer>
+
+  <script src="popup.js"></script>
+</body>
+</html>
