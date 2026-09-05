@@ -4,9 +4,12 @@
   "version": "1.0.0",
   "description": "Detects and blocks scam/phishing links using a synced blocklist and heuristic rules.",
   "permissions": ["webNavigation", "storage", "tabs", "activeTab", "scripting", "alarms"],
-  "host_permissions": ["http://*/*", "https://*/*"],
+  "host_permissions": ["http://*/*", "https://*/*", "https://*.firebaseio.com/*", "https://*.googleapis.com/*"],
   "background": {
     "service_worker": "background.js"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' https://www.gstatic.com; object-src 'self'"
   },
   "action": {
     "default_popup": "popup/popup.html",

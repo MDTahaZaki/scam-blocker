@@ -37,7 +37,7 @@ function renderRecentTable(reports) {
     urlTd.textContent = report.url;
 
     const timeTd = document.createElement('td');
-    timeTd.textContent = formatTimestamp(report.reportedAt);
+    timeTd.textContent = formatTimestamp(report.timestamp);
 
     tr.appendChild(urlTd);
     tr.appendChild(timeTd);
@@ -50,8 +50,8 @@ function renderChart(reports, since) {
   const now = Date.now();
 
   reports.forEach((report) => {
-    if (!report.reportedAt || !report.reportedAt.toDate) return;
-    const reportedAt = report.reportedAt.toDate().getTime();
+    if (!report.timestamp || !report.timestamp.toDate) return;
+    const reportedAt = report.timestamp.toDate().getTime();
     const hoursAgo = Math.floor((now - reportedAt) / (60 * 60 * 1000));
     if (hoursAgo >= 0 && hoursAgo < 24) {
       buckets[23 - hoursAgo] += 1;
@@ -84,29 +84,39 @@ function renderChart(reports, since) {
   });
 }
 
+// `blocklist` is publicly readable (see backend/firestore.rules), but
+// `reported_urls` is now locked down to Cloud-Function-only access — no
+// client, including this dashboard, can read it directly any more. That
+// query is expected to fail with permission-denied until a dedicated
+// dashboard-facing callable (e.g. getRecentReports) is added; the blocklist
+// stats still load normally in the meantime.
 async function loadDashboard() {
   const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
   try {
-    const [reportsSnap, blocklistSnap] = await Promise.all([
-      db
-        .collection('reported_urls')
-        .where('reportedAt', '>=', since)
-        .orderBy('reportedAt', 'desc')
-        .get(),
-      db.collection('blocklist').get()
-    ]);
+    const blocklistSnap = await db.collection('blocklist').get();
+    totalBlocklistEl.textContent = blocklistSnap.size;
+  } catch (err) {
+    console.error('Failed to load blocklist', err);
+    totalBlocklistEl.textContent = '—';
+  }
+
+  try {
+    const reportsSnap = await db
+      .collection('reported_urls')
+      .where('timestamp', '>=', since)
+      .orderBy('timestamp', 'desc')
+      .get();
 
     const reports = reportsSnap.docs.map((doc) => doc.data());
-
     reports24hEl.textContent = reports.length;
-    totalBlocklistEl.textContent = blocklistSnap.size;
-
     renderRecentTable(reports);
     renderChart(reports, since);
   } catch (err) {
-    console.error('Failed to load dashboard data', err);
-    recentTableBody.innerHTML = `<tr><td colspan="2">Failed to load data: ${err.message}</td></tr>`;
+    console.warn('reported_urls is not directly readable by clients (expected — see firestore.rules):', err.message);
+    reports24hEl.textContent = '—';
+    recentTableBody.innerHTML =
+      '<tr><td colspan="2">Recent-reports view requires a dashboard-facing Cloud Function (not yet implemented).</td></tr>';
   }
 }
 

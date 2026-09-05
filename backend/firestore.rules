@@ -3,14 +3,14 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Reported URLs: only authenticated writes are permitted directly from
-    // clients (defense in depth). In practice all writes go through the
-    // reportUrl Cloud Function, which uses the Admin SDK and bypasses these
-    // rules entirely. No client ever reads this collection directly except
-    // the dashboard, which needs it for the "reports per hour" chart.
+    // Reported URLs: no direct client access at all, not even read. All
+    // reads/writes go through Cloud Functions (reportUrl), which use the
+    // Admin SDK and bypass these rules entirely. Revisit this if/when the
+    // dashboard needs its own authenticated read access to this collection
+    // (e.g. via a dedicated getRecentReports callable).
     match /reported_urls/{reportId} {
-      allow read: if true;
-      allow write: if request.auth != null;
+      allow read: if false;
+      allow write: if false;
     }
 
     // Blocklist: public read so the extension (which has no signed-in user)

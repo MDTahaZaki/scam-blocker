@@ -1,7 +1,11 @@
 // ---- Configuration ---------------------------------------------------
-// Replace with your deployed Cloud Functions base URL and hosted dashboard URL.
-const FUNCTIONS_BASE_URL = 'https://REGION-YOUR_PROJECT_ID.cloudfunctions.net';
-const REPORT_URL_ENDPOINT = `${FUNCTIONS_BASE_URL}/reportUrl`;
+// Replace with your hosted dashboard URL.
+//
+// Reporting is delegated to background.js via chrome.runtime.sendMessage
+// rather than loading the Firebase SDK a second time here: background.js
+// is already Firebase-initialized (see extension/firebase-config.js) and
+// holds the anonymous auth session, so routing through it keeps there
+// being exactly one place that loads remote SDK code.
 const DASHBOARD_URL = 'https://YOUR_PROJECT_ID.web.app/dashboard/index.html';
 
 const statusCard = document.getElementById('status-card');
@@ -70,43 +74,31 @@ async function loadStatus() {
   );
 }
 
-// A random id persisted locally so reportUrl can count distinct reporters
-// without requiring the Firebase Auth client SDK (no build step here).
-async function getAnonUid() {
-  const { anonUid } = await chrome.storage.local.get('anonUid');
-  if (anonUid) return anonUid;
-
-  const newUid = 'anon-' + crypto.randomUUID();
-  await chrome.storage.local.set({ anonUid: newUid });
-  return newUid;
-}
-
-async function reportCurrentSite() {
+function reportCurrentSite() {
   if (!currentTab || !currentTab.url) return;
 
   reportBtn.disabled = true;
-  reportMessage.hidden = true;
   reportMessage.classList.remove('error');
+  reportMessage.textContent = 'Submitting report…';
+  reportMessage.hidden = false;
 
-  try {
-    const uid = await getAnonUid();
-    const res = await fetch(REPORT_URL_ENDPOINT, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: currentTab.url, uid })
-    });
-
-    if (!res.ok) throw new Error(`Server responded ${res.status}`);
-
-    reportMessage.textContent = 'Thanks! This site has been reported.';
-    reportMessage.hidden = false;
-  } catch (err) {
-    reportMessage.textContent = 'Could not submit report. Please try again later.';
-    reportMessage.classList.add('error');
-    reportMessage.hidden = false;
-  } finally {
+  chrome.runtime.sendMessage({ type: 'REPORT_URL', url: currentTab.url }, (response) => {
     reportBtn.disabled = false;
-  }
+
+    if (chrome.runtime.lastError || !response || !response.success) {
+      reportMessage.textContent =
+        (response && response.error) ||
+        (chrome.runtime.lastError && chrome.runtime.lastError.message) ||
+        'Could not submit report. Please try again later.';
+      reportMessage.classList.add('error');
+      reportMessage.hidden = false;
+      return;
+    }
+
+    reportMessage.textContent = response.message || 'Thanks! This site has been reported.';
+    reportMessage.classList.remove('error');
+    reportMessage.hidden = false;
+  });
 }
 
 reportBtn.addEventListener('click', reportCurrentSite);

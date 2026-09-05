@@ -1,13 +1,69 @@
-// Service worker: navigation gate + blocklist sync.
+// Service worker: navigation gate + Firebase-backed blocklist sync/reporting.
+//
+// IMPORTANT (Manifest V3 remote-code caveat): Chrome Web Store policy
+// prohibits published extensions from executing remotely-hosted code. The
+// importScripts() calls below pull the Firebase "compat" SDK from Google's
+// CDN, which works for local/unpacked development and testing (and requires
+// the content_security_policy override in manifest.json), but a Web Store
+// submission would need these files vendored locally instead (e.g. under
+// extension/vendor/firebase/) with the importScripts() paths below updated
+// to match and the CSP override removed. Everything here degrades
+// gracefully if the SDK fails to load or firebase-config.js is left with an
+// empty apiKey: the extension falls back to local heuristics plus whatever
+// blocklist is already cached.
+
 importScripts('utils/heuristics.js');
 
-// ---- Configuration ---------------------------------------------------
-// Replace with your deployed Cloud Functions base URL, e.g.
-// https://us-central1-your-project-id.cloudfunctions.net
-const FUNCTIONS_BASE_URL = 'https://REGION-YOUR_PROJECT_ID.cloudfunctions.net';
+let firebaseReady = false;
+let auth = null;
+let cloudFunctions = null;
 
-const GET_BLOCKLIST_URL = `${FUNCTIONS_BASE_URL}/getBlocklist`;
-const INCREMENT_SCAN_URL = `${FUNCTIONS_BASE_URL}/incrementScan`;
+try {
+  importScripts(
+    'https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js',
+    'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js',
+    'https://www.gstatic.com/firebasejs/10.12.2/firebase-functions-compat.js',
+    'firebase-config.js'
+  );
+
+  if (firebaseConfig && firebaseConfig.apiKey) {
+    firebase.initializeApp(firebaseConfig);
+    auth = firebase.auth();
+    cloudFunctions = firebase.functions();
+    firebaseReady = true;
+  } else {
+    console.warn(
+      '[ScamBlocker] firebase-config.js has no apiKey set — running in local-only mode ' +
+        '(heuristics + last cached blocklist; sync and reporting are disabled).'
+    );
+  }
+} catch (err) {
+  console.warn('[ScamBlocker] Firebase SDK failed to load — running in local-only mode:', err && err.message);
+}
+
+// Resolves once Firebase Auth's initial state is known, signing in
+// anonymously if no session was restored (e.g. first run, or a service
+// worker that lost its previous in-memory state).
+async function ensureSignedIn() {
+  if (!firebaseReady) return null;
+  try {
+    const existingUser = await new Promise((resolve) => {
+      const unsubscribe = auth.onAuthStateChanged((user) => {
+        unsubscribe();
+        resolve(user);
+      });
+    });
+    if (existingUser) return existingUser;
+
+    const credential = await auth.signInAnonymously();
+    return credential.user;
+  } catch (err) {
+    console.warn('[ScamBlocker] Anonymous sign-in failed:', err && err.message);
+    return null;
+  }
+}
+
+// ---- Configuration ---------------------------------------------------
 
 const BLOCKLIST_ALARM_NAME = 'refresh-blocklist';
 const BLOCKLIST_REFRESH_MINUTES = 60;
@@ -19,33 +75,34 @@ const tabStatus = new Map();
 
 // ---- Blocklist sync ----------------------------------------------------
 
-async function refreshBlocklist() {
+async function syncBlocklist() {
+  if (!firebaseReady) return;
   try {
-    const res = await fetch(GET_BLOCKLIST_URL);
-    if (!res.ok) throw new Error(`getBlocklist returned ${res.status}`);
-    const data = await res.json();
-    const urls = Array.isArray(data.blocklist) ? data.blocklist : [];
+    await ensureSignedIn();
+    const getBlocklist = cloudFunctions.httpsCallable('getBlocklist');
+    const result = await getBlocklist();
+    const urls = Array.isArray(result.data) ? result.data : [];
     await chrome.storage.local.set({
       [BLOCKLIST_STORAGE_KEY]: urls,
       blocklistUpdatedAt: Date.now()
     });
   } catch (err) {
-    console.warn('[ScamBlocker] Failed to refresh blocklist:', err && err.message);
+    console.warn('[ScamBlocker] Failed to sync blocklist:', err && err.message);
   }
 }
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.alarms.create(BLOCKLIST_ALARM_NAME, { periodInMinutes: BLOCKLIST_REFRESH_MINUTES });
-  refreshBlocklist();
+  ensureSignedIn().then(syncBlocklist);
 });
 
 chrome.runtime.onStartup.addListener(() => {
-  refreshBlocklist();
+  ensureSignedIn().then(syncBlocklist);
 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === BLOCKLIST_ALARM_NAME) {
-    refreshBlocklist();
+    syncBlocklist();
   }
 });
 
@@ -94,13 +151,12 @@ async function evaluateUrl(url) {
 }
 
 function reportScan(url, isDangerous) {
-  fetch(INCREMENT_SCAN_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ url, isDangerous })
-  }).catch(() => {
-    // Stats reporting is best-effort; ignore failures.
-  });
+  if (!firebaseReady) return;
+  ensureSignedIn()
+    .then(() => cloudFunctions.httpsCallable('incrementScan')({ url, isDangerous }))
+    .catch(() => {
+      // Stats reporting is best-effort; ignore failures.
+    });
 }
 
 function redirectToBlockPage(tabId, url, reasons) {
@@ -108,6 +164,28 @@ function redirectToBlockPage(tabId, url, reasons) {
     `${BLOCKPAGE_PATH}?url=${encodeURIComponent(url)}&reasons=${encodeURIComponent(JSON.stringify(reasons))}`
   );
   chrome.tabs.update(tabId, { url: blockUrl });
+}
+
+// ---- Community reporting (popup) ------------------------------------
+
+async function reportUrlToFirebase(url) {
+  if (!firebaseReady) {
+    return {
+      success: false,
+      error: 'Firebase is not configured. Add your project config to extension/firebase-config.js.'
+    };
+  }
+
+  try {
+    const user = await ensureSignedIn();
+    if (!user) throw new Error('Could not authenticate with Firebase.');
+
+    const reportUrl = cloudFunctions.httpsCallable('reportUrl');
+    const result = await reportUrl({ url });
+    return { success: true, message: (result.data && result.data.message) || 'Reported successfully.' };
+  } catch (err) {
+    return { success: false, error: (err && err.message) || 'Failed to report URL.' };
+  }
 }
 
 // ---- Navigation gate ------------------------------------------------------
@@ -164,6 +242,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     evaluateUrl(message.url).then(({ isDangerous, reasons }) => {
       sendResponse({ url: message.url, isDangerous, reasons, checkedAt: Date.now() });
     });
+    return true; // keep the message channel open for the async sendResponse
+  }
+
+  if (message.type === 'REPORT_URL') {
+    reportUrlToFirebase(message.url).then(sendResponse);
     return true; // keep the message channel open for the async sendResponse
   }
 

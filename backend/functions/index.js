@@ -1,9 +1,9 @@
 const functions = require('firebase-functions');
 const admin = require('firebase-admin');
-const cors = require('cors')({ origin: true });
 
 admin.initializeApp();
 const db = admin.firestore();
+const FieldValue = admin.firestore.FieldValue;
 
 const REPORTS_COLLECTION = 'reported_urls';
 const BLOCKLIST_COLLECTION = 'blocklist';
@@ -11,133 +11,104 @@ const STATS_COLLECTION = 'stats';
 const REPORT_THRESHOLD = 3;
 const BLOCKLIST_CACHE_MS = 5 * 60 * 1000;
 
-// Derive a Firestore-safe document id from a URL.
+// In-memory cache shared across warm invocations of getBlocklist.
+let blocklistCache = { data: null, expiresAt: 0 };
+
+// Derive a stable, Firestore-safe document id from a URL so repeated
+// reports of the same URL accumulate on one document instead of creating
+// duplicates.
 function urlToDocId(url) {
   return Buffer.from(url).toString('base64').replace(/[/+=]/g, '_');
 }
 
-function normalizeUrl(url) {
-  return String(url || '').trim();
-}
-
-// In-memory cache shared across warm invocations of getBlocklist.
-let blocklistCache = { data: null, expiresAt: 0 };
-
 /**
- * POST /reportUrl  { url: string, uid?: string }
- * Records a report for a URL. Once a URL has been reported by 3+ distinct
- * anonymous uids, it is promoted into the public blocklist.
+ * Callable: reportUrl({ url })
+ * Requires an authenticated caller (anonymous auth is fine). Records the
+ * report on a per-URL document in `reported_urls`, tracking the set of
+ * distinct reporter uids. Once 3+ distinct users have reported the same
+ * URL, it is promoted into the public `blocklist` collection.
  */
-exports.reportUrl = functions.https.onRequest((req, res) => {
-  cors(req, res, async () => {
-    if (req.method !== 'POST') {
-      res.status(405).json({ error: 'Method not allowed' });
-      return;
+exports.reportUrl = functions.https.onCall(async (data, context) => {
+  if (!context.auth) {
+    throw new functions.https.HttpsError(
+      'unauthenticated',
+      'You must be signed in (anonymous auth is fine) to report a URL.'
+    );
+  }
+
+  const url = String((data && data.url) || '').trim();
+  if (!url || !/^https?:\/\//i.test(url)) {
+    throw new functions.https.HttpsError('invalid-argument', 'A valid http(s) url is required.');
+  }
+
+  const uid = context.auth.uid;
+  const docId = urlToDocId(url);
+  const reportRef = db.collection(REPORTS_COLLECTION).doc(docId);
+
+  await reportRef.set(
+    {
+      url,
+      timestamp: FieldValue.serverTimestamp(),
+      uid,
+      count: FieldValue.increment(1),
+      // arrayUnion de-dupes automatically, so this doubles as the set of
+      // distinct reporters used for the blocklist-promotion check below.
+      reportedBy: FieldValue.arrayUnion(uid)
+    },
+    { merge: true }
+  );
+
+  const reportSnap = await reportRef.get();
+  const reportedBy = (reportSnap.data() && reportSnap.data().reportedBy) || [];
+
+  if (reportedBy.length >= REPORT_THRESHOLD) {
+    const blocklistRef = db.collection(BLOCKLIST_COLLECTION).doc(docId);
+    const blocklistSnap = await blocklistRef.get();
+    if (!blocklistSnap.exists) {
+      await blocklistRef.set({ url, date_added: FieldValue.serverTimestamp() });
+      blocklistCache = { data: null, expiresAt: 0 }; // invalidate cache
     }
+  }
 
-    const url = normalizeUrl(req.body && req.body.url);
-    if (!url || !/^https?:\/\//i.test(url)) {
-      res.status(400).json({ error: 'A valid http(s) url is required' });
-      return;
-    }
-
-    // The extension has no build step and does not use the Firebase Auth
-    // client SDK, so it generates and persists its own anonymous uid
-    // (a random UUID stored in chrome.storage.local) and sends it here.
-    const uid = normalizeUrl(req.body && req.body.uid) || `anon-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-
-    try {
-      await db.collection(REPORTS_COLLECTION).add({
-        url,
-        uid,
-        reportedAt: admin.firestore.FieldValue.serverTimestamp()
-      });
-
-      const reportsSnap = await db
-        .collection(REPORTS_COLLECTION)
-        .where('url', '==', url)
-        .get();
-
-      const distinctUids = new Set(reportsSnap.docs.map((doc) => doc.data().uid));
-
-      let blocked = false;
-      if (distinctUids.size >= REPORT_THRESHOLD) {
-        const docId = urlToDocId(url);
-        await db.collection(BLOCKLIST_COLLECTION).doc(docId).set(
-          {
-            url,
-            addedAt: admin.firestore.FieldValue.serverTimestamp(),
-            reportCount: distinctUids.size
-          },
-          { merge: true }
-        );
-        blocked = true;
-        blocklistCache = { data: null, expiresAt: 0 }; // invalidate cache
-      }
-
-      res.status(200).json({ success: true, reportCount: distinctUids.size, addedToBlocklist: blocked });
-    } catch (err) {
-      console.error('reportUrl failed', err);
-      res.status(500).json({ error: 'Internal error' });
-    }
-  });
+  return { success: true, message: 'Report received. Thank you for helping keep the community safe.' };
 });
 
 /**
- * GET /getBlocklist
- * Returns { blocklist: string[] }, cached in-memory for 5 minutes.
+ * Callable: getBlocklist()
+ * Public (no auth required). Returns the blocklist as a plain array of
+ * URL strings, cached in-memory for 5 minutes to reduce Firestore reads.
  */
-exports.getBlocklist = functions.https.onRequest((req, res) => {
-  cors(req, res, async () => {
-    if (req.method !== 'GET') {
-      res.status(405).json({ error: 'Method not allowed' });
-      return;
-    }
-
-    try {
-      const now = Date.now();
-      if (!blocklistCache.data || blocklistCache.expiresAt < now) {
-        const snap = await db.collection(BLOCKLIST_COLLECTION).get();
-        const urls = snap.docs.map((doc) => doc.data().url).filter(Boolean);
-        blocklistCache = { data: urls, expiresAt: now + BLOCKLIST_CACHE_MS };
-      }
-
-      res.set('Cache-Control', 'public, max-age=300');
-      res.status(200).json({ blocklist: blocklistCache.data });
-    } catch (err) {
-      console.error('getBlocklist failed', err);
-      res.status(500).json({ error: 'Internal error' });
-    }
-  });
+exports.getBlocklist = functions.https.onCall(async () => {
+  const now = Date.now();
+  if (!blocklistCache.data || blocklistCache.expiresAt < now) {
+    const snap = await db.collection(BLOCKLIST_COLLECTION).get();
+    const urls = snap.docs.map((doc) => doc.data().url).filter(Boolean);
+    blocklistCache = { data: urls, expiresAt: now + BLOCKLIST_CACHE_MS };
+  }
+  return blocklistCache.data;
 });
 
 /**
- * POST /incrementScan  { url: string, isDangerous: boolean }
- * Optional stats endpoint called by the extension on every navigation check.
+ * Callable: incrementScan({ url, isDangerous })
+ * Optional stats hook the extension can call whenever it evaluates a URL.
+ * Best-effort: failures are logged but never surfaced to the caller.
  */
-exports.incrementScan = functions.https.onRequest((req, res) => {
-  cors(req, res, async () => {
-    if (req.method !== 'POST') {
-      res.status(405).json({ error: 'Method not allowed' });
-      return;
-    }
-
-    try {
-      const isDangerous = Boolean(req.body && req.body.isDangerous);
-      const statsRef = db.collection(STATS_COLLECTION).doc('scans');
-      await statsRef.set(
+exports.incrementScan = functions.https.onCall(async (data) => {
+  try {
+    const isDangerous = Boolean(data && data.isDangerous);
+    await db
+      .collection(STATS_COLLECTION)
+      .doc('scans')
+      .set(
         {
-          totalScans: admin.firestore.FieldValue.increment(1),
-          dangerousScans: admin.firestore.FieldValue.increment(isDangerous ? 1 : 0),
-          lastScanAt: admin.firestore.FieldValue.serverTimestamp()
+          totalScans: FieldValue.increment(1),
+          dangerousScans: FieldValue.increment(isDangerous ? 1 : 0),
+          lastScanAt: FieldValue.serverTimestamp()
         },
         { merge: true }
       );
-
-      res.status(200).json({ success: true });
-    } catch (err) {
-      console.error('incrementScan failed', err);
-      res.status(500).json({ error: 'Internal error' });
-    }
-  });
+  } catch (err) {
+    console.error('incrementScan failed', err);
+  }
+  return { success: true };
 });

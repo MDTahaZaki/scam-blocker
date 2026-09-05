@@ -17,66 +17,91 @@ scam-blocker/
 └── dashboard/     Static dashboard (Chart.js), deployable to Firebase Hosting
 ```
 
-## 1. Set up Firebase
+## 1. Firebase Setup
 
 1. Go to the [Firebase console](https://console.firebase.google.com/) and
    create a new project.
 2. Enable **Firestore Database** (production mode is fine — rules are
    provided in `backend/firestore.rules`).
-3. Install the Firebase CLI if you don't have it:
+3. Enable **Authentication** → Sign-in method → **Anonymous**. The
+   extension signs every user in anonymously so `reportUrl` can attribute
+   reports to a stable `uid` without ever asking for credentials.
+4. Enable **Cloud Functions** (this requires the project to be on the
+   Blaze pay-as-you-go plan; the free tier's included quota covers this
+   extension's traffic for typical usage).
+5. Install the Firebase CLI if you don't have it, and point it at your
+   project:
    ```bash
    npm install -g firebase-tools
    firebase login
-   ```
-4. From `backend/`, point the CLI at your project:
-   ```bash
    cd backend
    firebase use --add
    # select your project, give it an alias (e.g. "default")
    ```
+6. Install function dependencies and deploy the rules + functions:
+   ```bash
+   cd backend/functions
+   npm install
+   cd ..
+   firebase deploy --only functions,firestore:rules
+   ```
+7. In the Firebase console, go to **Project settings → General → Your apps**,
+   add a **Web app**, and copy the resulting config object.
+8. Paste those values into `extension/firebase-config.js`:
+   ```js
+   const firebaseConfig = {
+     apiKey: '...',
+     authDomain: '...',
+     projectId: '...',
+     storageBucket: '...',
+     messagingSenderId: '...',
+     appId: '...'
+   };
+   ```
+   Leaving `apiKey` empty (the shipped default) runs the extension in
+   **local-only mode**: heuristics and any previously-cached blocklist still
+   work, but sync and reporting are disabled until this is filled in.
+9. Load the extension (see below) and test: open the popup on any page and
+   click **Report this site as scam**, then check the Firestore console —
+   a `reported_urls` document should appear, and after 3 distinct anonymous
+   users report the same URL it should also appear in `blocklist`.
 
-## 2. Deploy the Cloud Functions
+The backend exposes three **callable** functions (not raw HTTP endpoints —
+the Firebase Functions SDK handles auth, CORS, and serialization):
+- `reportUrl({ url })` — requires an authenticated (anonymous is fine)
+  caller; records the report and auto-blocklists a URL once 3 distinct
+  uids have reported it.
+- `getBlocklist()` — public, no auth required; returns the blocklist as a
+  plain array of URL strings, cached in-memory server-side for 5 minutes.
+- `incrementScan({ url, isDangerous })` — optional stats hook, best-effort.
 
-```bash
-cd backend/functions
-npm install
-cd ..
-firebase deploy --only functions,firestore:rules
-```
+### Manifest V3 and remote code
 
-After deploying, note the base URL Firebase prints for your functions, e.g.:
+Chrome Web Store policy prohibits published extensions from executing
+remotely-hosted code. `extension/background.js` loads the Firebase
+"compat" SDK from Google's CDN via `importScripts()`, which needs the
+`content_security_policy` override already present in
+`extension/manifest.json` (`script-src 'self' https://www.gstatic.com`).
+This works fine for local development and side-loaded/enterprise-policy
+installs, but **a Chrome Web Store submission would need the SDK files
+vendored locally** instead (e.g. under `extension/vendor/firebase/`), with
+the `importScripts()` paths updated to match and the CSP override removed.
+Either way, the extension degrades gracefully if the SDK can't load: it
+falls back to local heuristics plus whatever blocklist is already cached.
 
-```
-https://us-central1-your-project-id.cloudfunctions.net
-```
-
-You'll get three endpoints:
-- `POST /reportUrl` — `{ url, uid }` — records a report; auto-blocklists a
-  URL once 3 distinct anonymous uids have reported it.
-- `GET /getBlocklist` — returns `{ blocklist: string[] }`, cached 5 minutes.
-- `POST /incrementScan` — `{ url, isDangerous }` — optional scan counter.
-
-## 3. Point the extension at your Firebase project
-
-Edit these two files and replace `FUNCTIONS_BASE_URL` with the URL from
-step 2:
-
-- `extension/background.js`
-- `extension/popup/popup.js` (also set `DASHBOARD_URL` here if you deploy
-  the dashboard via Firebase Hosting in step 5)
-
-## 4. Load the extension in Chrome
+## 2. Load the extension in Chrome
 
 1. Open `chrome://extensions`.
 2. Enable **Developer mode** (top right).
 3. Click **Load unpacked** and select the `extension/` folder.
 4. Pin the extension and open a page — the popup will show whether the
    current page looks safe, and a "Report this site as scam" button submits
-   the current URL to `reportUrl`.
-5. The blocklist is fetched from `getBlocklist` on install/startup and every
-   hour afterward, and cached in `chrome.storage.local`.
+   the current URL via the `reportUrl` callable.
+5. The blocklist is fetched via the `getBlocklist` callable on
+   install/startup and every hour afterward (`chrome.alarms`), and cached
+   in `chrome.storage.local`.
 
-## 5. Set up and deploy the dashboard (optional)
+## 3. Set up and deploy the dashboard (optional)
 
 1. In `dashboard/dashboard.js`, replace the placeholder `firebaseConfig`
    object with your project's real config (Firebase console → Project
@@ -87,8 +112,11 @@ step 2:
    firebase deploy --only hosting
    ```
    (`backend/firebase.json` already points hosting at `../dashboard`.)
-3. The dashboard reads `reported_urls` and `blocklist` directly from
-   Firestore (public read, per `firestore.rules`) — no backend calls needed.
+3. The dashboard reads `blocklist` directly from Firestore (public read,
+   per `firestore.rules`). `reported_urls` is locked down to Cloud
+   Functions only (no direct client read), so the "reports per hour" chart
+   and recent-reports table will show a placeholder until a dedicated
+   dashboard-facing callable (e.g. `getRecentReports`) is added.
 
 ## How detection works
 
@@ -109,14 +137,21 @@ step 2:
 
 ## Notes / design tradeoffs
 
-- The extension doesn't use the Firebase Auth SDK (kept dependency-free, no
-  build step). Instead it generates a random UUID on first use, stored in
-  `chrome.storage.local`, and sends it as `uid` on reports — this is what
-  `reportUrl` uses to count distinct reporters. Firestore's
-  `reported_urls` write rule requires Firebase Auth, which only the trusted
-  `reportUrl` Cloud Function (via the Admin SDK, which bypasses security
-  rules) actually writes through.
-- The extension manifest includes the `alarms` permission in addition to
-  the ones listed in the spec — MV3 service workers can be terminated at
-  any time, so `chrome.alarms` (rather than `setInterval`) is required for
-  the hourly blocklist refresh to reliably survive worker restarts.
+- The extension uses the real Firebase Auth SDK (compat build, loaded via
+  `importScripts()` in `background.js`) and signs every user in
+  anonymously on install/startup. `reportUrl` uses `context.auth.uid` from
+  that session to track distinct reporters — no client-generated ids
+  involved. See "Manifest V3 and remote code" above for the tradeoffs of
+  loading the SDK from a CDN.
+- The popup (`popup.js`) doesn't load the Firebase SDK itself. Reporting a
+  URL sends a `REPORT_URL` message to `background.js`, which is already
+  Firebase-initialized and holds the auth session — this keeps there being
+  exactly one place in the extension that loads remote SDK code.
+- `reported_urls` documents are keyed by a stable id derived from the URL
+  (base64 of the URL string) rather than being append-only, so repeated
+  reports of the same URL accumulate on one document (`count` increments,
+  `reportedBy` is a de-duplicated array of uids) instead of creating a new
+  document per report.
+- `chrome.alarms` (rather than `setInterval`) drives the hourly blocklist
+  refresh, since MV3 service workers can be terminated at any time and
+  `chrome.alarms` reliably survives worker restarts.
