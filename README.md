@@ -109,7 +109,51 @@ falls back to local heuristics plus whatever blocklist is already cached.
    install/startup and every hour afterward (`chrome.alarms`), and cached
    in `chrome.storage.local`.
 
-## 3. Set up and deploy the dashboard (optional)
+## 3. Set up Google Safe Browsing (optional)
+
+The extension can supplement local heuristics with Google's **Safe
+Browsing Lookup API v4** — a free-tier cloud check against Google's
+constantly-updated list of malware/phishing sites.
+
+1. In the [Google Cloud Console](https://console.cloud.google.com/), create
+   (or pick) a project and enable the **Safe Browsing API**
+   (APIs & Services → Library → search "Safe Browsing API" → Enable).
+2. Go to **APIs & Services → Credentials → Create credentials → API key**.
+   Restrict the key to the Safe Browsing API if you want (recommended).
+3. Open the extension popup → **Settings** tab, paste the key into
+   **Safe Browsing API key**, and check **Enable Google Safe Browsing**.
+   Both are saved immediately to `chrome.storage.local`
+   (`safeBrowsingApiKey`, `safeBrowsingEnabled`) — no reload needed.
+4. The free tier's quota is generous for personal use. To keep usage low,
+   the extension only calls Safe Browsing for a URL that local heuristics
+   and the blocklist did **not** already flag, and caches each verdict
+   (safe or unsafe) in `chrome.storage.local` for 24 hours so the same URL
+   isn't looked up twice in a day.
+5. If the key is missing, invalid, or the API call fails for any reason,
+   the extension silently falls back to heuristics + blocklist only —
+   Safe Browsing is always an optional, best-effort layer.
+
+### Adjusting detection sensitivity
+
+Also in the popup's **Settings** tab, **Detection sensitivity** controls
+how many/how strong the heuristic signals in
+`extension/utils/heuristics.js` need to be before a URL is blocked:
+
+- **Low** — only blocks when several signals combine (fewer false
+  positives, may miss borderline sites).
+- **Medium** (default) — balanced; a couple of strong signals (e.g. a raw
+  IP address, or a brand name on the wrong domain) is enough on its own.
+- **High** — a single moderate signal (e.g. one suspicious keyword) can be
+  enough to block; catches more but is more prone to flagging legitimate
+  sites.
+
+Internally this is a numeric score: each heuristic rule contributes a
+weight, and the sensitivity level just picks the score threshold required
+to call a URL a scam (see `SENSITIVITY_THRESHOLDS` in
+`extension/utils/heuristics.js`). The setting is stored as `sensitivity`
+(`1`/`2`/`3`) in `chrome.storage.local`.
+
+## 4. Set up and deploy the dashboard (optional)
 
 1. In `dashboard/dashboard.js`, replace the placeholder `firebaseConfig`
    object with your project's real config (Firebase console → Project
@@ -140,20 +184,43 @@ falls back to local heuristics plus whatever blocklist is already cached.
 
 ## How detection works
 
-- **Heuristics** (`extension/utils/heuristics.js`): flags URLs that are
-  over 100 characters, use a raw IP address, use a commonly-abused TLD
-  (`.tk`, `.ml`, `.xyz`, `.top`, `.club`, etc.), have more than 3
-  subdomains, contain an `@` symbol, have hyphens in the domain, or contain
-  scam-related keywords (`login`, `verify`, `account`, `bank`, etc.).
+- **Heuristics** (`extension/utils/heuristics.js`, `HeuristicsUtil.checkUrl(url, sensitivity)`):
+  a weighted scoring engine, not a single boolean per rule. Signals
+  include: a URL over 120 characters; a raw IP-address host; a
+  commonly-abused TLD (`.tk`, `.ml`, `.xyz`, `.top`, `.club`, `.support`,
+  `.info`, `.online`, etc.); more than 3 subdomains; an `@` symbol in the
+  URL's authority (used to hide the real host); an excessive number of
+  hyphens or digits in the domain; phishing-style keywords in the path,
+  query, or host (`login`, `verify`, `account`, `bank`, `paypal`,
+  `password`, `confirm`, `unlock`, `suspended`, `webscr`, `cmd`, etc.); a
+  known brand name (`whirlpool`, `paypal`, `amazon`, `microsoft`, ...)
+  appearing in the domain on a TLD that isn't `.com`/`.org`/`.net`/`.co`
+  or an official country-code TLD (e.g. `whirlpool-service.support` vs.
+  the real `whirlpool.com`); and non-standard/punycode ("xn--") characters
+  in the hostname, which can indicate an IDN homograph (lookalike)
+  domain. Each rule adds a weight to a score, and the **sensitivity**
+  setting (see above) picks how high that score must get before the URL
+  is treated as a scam.
 - **Blocklist**: URLs reported 3+ times by distinct users are promoted to
   Firestore's `blocklist` collection by the `reportUrl` function, synced
   into the extension hourly.
+- **Google Safe Browsing** (optional, see setup above): if enabled with a
+  valid API key, `background.js`'s `checkWithSafeBrowsing()` calls the
+  Safe Browsing Lookup API v4 for any URL that heuristics and the
+  blocklist didn't already flag, and adds "Google Safe Browsing flagged
+  this site" to the reasons if it returns a match. Results are cached in
+  `chrome.storage.local` for 24 hours; a missing key or a failed request
+  is treated as "not checked," never as an error.
 - **Enforcement**: `background.js` checks every top-level navigation
-  (`webNavigation.onBeforeNavigate`) against both the heuristics and the
-  local blocklist copy; `content.js` additionally re-checks the URL on
+  (`webNavigation.onBeforeNavigate`) against the temporary whitelist,
+  heuristics, the local blocklist copy, and (if enabled) Safe Browsing, in
+  that order; `content.js` additionally re-checks the URL on
   same-document (SPA) navigations that don't fire a `webNavigation` event.
   A match redirects the tab to `blockpage/block.html`, which shows the
-  blocked URL and the specific reasons it was flagged.
+  blocked URL and the specific reasons it was flagged, with **Back to
+  safety** and **Proceed anyway** (behind a second confirmation) buttons.
+  Proceeding whitelists that domain in `chrome.storage.local`
+  (`temporaryWhitelist`) for 24 hours so it isn't immediately re-blocked.
 
 ## Notes / design tradeoffs
 

@@ -8,21 +8,64 @@
 <body>
   <header>
     <h1>Scam Link Detector</h1>
+    <nav class="tabs" id="tabs">
+      <button type="button" class="tab-btn is-active" data-tab="status">Status</button>
+      <button type="button" class="tab-btn" data-tab="settings">Settings</button>
+    </nav>
   </header>
 
   <main>
-    <section id="status-card" class="status status--unknown">
-      <div class="status-icon" id="status-icon">?</div>
-      <div class="status-text">
-        <p class="status-label" id="status-label">Checking this page&hellip;</p>
-        <p class="status-url" id="status-url"></p>
-      </div>
+    <section id="tab-status" class="tab-panel is-active">
+      <section id="status-card" class="status status--unknown">
+        <div class="status-icon" id="status-icon">?</div>
+        <div class="status-text">
+          <p class="status-label" id="status-label">Checking this page&hellip;</p>
+          <p class="status-url" id="status-url"></p>
+        </div>
+      </section>
+
+      <ul id="reasons-list" class="reasons-list" hidden></ul>
+
+      <button id="report-btn" type="button">Report this site as scam</button>
+      <p id="report-message" class="report-message" hidden></p>
     </section>
 
-    <ul id="reasons-list" class="reasons-list" hidden></ul>
+    <section id="tab-settings" class="tab-panel">
+      <div class="setting-row">
+        <label class="checkbox-row" for="sb-enabled">
+          <input type="checkbox" id="sb-enabled" />
+          <span>Enable Google Safe Browsing</span>
+        </label>
+        <p class="setting-hint">
+          Sends the current page's URL to Google's Safe Browsing Lookup API
+          when local checks don't already flag it. Requires an API key.
+        </p>
+      </div>
 
-    <button id="report-btn" type="button">Report this site as scam</button>
-    <p id="report-message" class="report-message" hidden></p>
+      <div class="setting-row">
+        <label for="sb-api-key">Safe Browsing API key</label>
+        <input type="password" id="sb-api-key" placeholder="Paste your API key" autocomplete="off" />
+        <p class="setting-hint">
+          Free from the
+          <a id="sb-key-link" href="#" target="_blank" rel="noopener">Google Cloud Console</a>
+          (enable the "Safe Browsing API").
+        </p>
+      </div>
+
+      <div class="setting-row">
+        <label for="sensitivity">Detection sensitivity</label>
+        <select id="sensitivity">
+          <option value="1">Low &mdash; fewer false positives</option>
+          <option value="2">Medium &mdash; balanced (recommended)</option>
+          <option value="3">High &mdash; catches more, may over-flag</option>
+        </select>
+        <p class="setting-hint">
+          Higher sensitivity blocks a page with fewer suspicious signals.
+        </p>
+      </div>
+
+      <p id="settings-message" class="report-message" hidden></p>
+    </section>
   </main>
 
   <footer>

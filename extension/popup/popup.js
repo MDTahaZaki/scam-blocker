@@ -7,6 +7,14 @@
 // holds the anonymous auth session, so routing through it keeps there
 // being exactly one place that loads remote SDK code.
 const DASHBOARD_URL = 'https://YOUR_PROJECT_ID.web.app/dashboard/index.html';
+const SAFE_BROWSING_CONSOLE_URL =
+  'https://console.cloud.google.com/apis/library/safebrowsing.googleapis.com';
+
+const SETTINGS_DEFAULTS = {
+  safeBrowsingEnabled: false,
+  safeBrowsingApiKey: '',
+  sensitivity: 2
+};
 
 const statusCard = document.getElementById('status-card');
 const statusIcon = document.getElementById('status-icon');
@@ -17,9 +25,32 @@ const reportBtn = document.getElementById('report-btn');
 const reportMessage = document.getElementById('report-message');
 const dashboardLink = document.getElementById('dashboard-link');
 
+const tabButtons = document.querySelectorAll('.tab-btn');
+const tabPanels = document.querySelectorAll('.tab-panel');
+
+const sbEnabledInput = document.getElementById('sb-enabled');
+const sbApiKeyInput = document.getElementById('sb-api-key');
+const sbKeyLink = document.getElementById('sb-key-link');
+const sensitivitySelect = document.getElementById('sensitivity');
+const settingsMessage = document.getElementById('settings-message');
+
 dashboardLink.href = DASHBOARD_URL;
+sbKeyLink.href = SAFE_BROWSING_CONSOLE_URL;
 
 let currentTab = null;
+
+// ---- Tabs ---------------------------------------------------------------
+
+tabButtons.forEach((btn) => {
+  btn.addEventListener('click', () => {
+    tabButtons.forEach((b) => b.classList.toggle('is-active', b === btn));
+    tabPanels.forEach((panel) => {
+      panel.classList.toggle('is-active', panel.id === `tab-${btn.dataset.tab}`);
+    });
+  });
+});
+
+// ---- Status tab -----------------------------------------------------------
 
 function renderStatus({ url, isDangerous, reasons, unknown }) {
   statusUrlEl.textContent = url || '';
@@ -105,4 +136,60 @@ function reportCurrentSite() {
 }
 
 reportBtn.addEventListener('click', reportCurrentSite);
+
+// ---- Settings tab -----------------------------------------------------
+
+let settingsMessageTimer = null;
+
+function showSettingsMessage(text, isError) {
+  clearTimeout(settingsMessageTimer);
+  settingsMessage.textContent = text;
+  settingsMessage.classList.toggle('error', Boolean(isError));
+  settingsMessage.hidden = false;
+  settingsMessageTimer = setTimeout(() => {
+    settingsMessage.hidden = true;
+  }, 2000);
+}
+
+async function loadSettings() {
+  const stored = await chrome.storage.local.get(Object.keys(SETTINGS_DEFAULTS));
+  const settings = { ...SETTINGS_DEFAULTS, ...stored };
+
+  sbEnabledInput.checked = Boolean(settings.safeBrowsingEnabled);
+  sbApiKeyInput.value = settings.safeBrowsingApiKey || '';
+  sensitivitySelect.value = String(settings.sensitivity);
+}
+
+async function saveSetting(key, value) {
+  try {
+    await chrome.storage.local.set({ [key]: value });
+    showSettingsMessage('Settings saved.', false);
+  } catch (err) {
+    showSettingsMessage((err && err.message) || 'Could not save settings.', true);
+  }
+}
+
+sbEnabledInput.addEventListener('change', () => {
+  if (sbEnabledInput.checked && !sbApiKeyInput.value.trim()) {
+    showSettingsMessage('Add an API key first to enable Safe Browsing.', true);
+    sbEnabledInput.checked = false;
+    return;
+  }
+  saveSetting('safeBrowsingEnabled', sbEnabledInput.checked);
+});
+
+sbApiKeyInput.addEventListener('change', () => {
+  const key = sbApiKeyInput.value.trim();
+  saveSetting('safeBrowsingApiKey', key);
+  if (!key && sbEnabledInput.checked) {
+    sbEnabledInput.checked = false;
+    saveSetting('safeBrowsingEnabled', false);
+  }
+});
+
+sensitivitySelect.addEventListener('change', () => {
+  saveSetting('sensitivity', Number(sensitivitySelect.value));
+});
+
 loadStatus();
+loadSettings();

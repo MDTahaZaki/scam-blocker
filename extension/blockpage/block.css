@@ -86,6 +86,9 @@ h1 {
 
 .actions {
   margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
 .btn {
@@ -105,4 +108,38 @@ h1 {
 
 .btn-primary:hover {
   background: #b82a22;
+}
+
+.btn-danger {
+  background: #ffffff;
+  color: #b82a22;
+  border: 1px solid #f3b4ae;
+}
+
+.btn-danger:hover {
+  background: #fdeaea;
+}
+
+.btn-danger:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.btn-small {
+  width: auto;
+  padding: 8px 14px;
+  font-size: 13px;
+  margin-top: 10px;
+}
+
+.proceed-warning {
+  text-align: left;
+  background: #fff7ed;
+  border: 1px solid #fdba74;
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin: 0;
+  font-size: 13px;
+  color: #7c2d12;
+  line-height: 1.5;
 }

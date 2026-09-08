@@ -22,7 +22,16 @@
     </div>
 
     <div class="actions">
-      <button id="go-back-btn" type="button" class="btn btn-primary">Go back</button>
+      <button id="go-back-btn" type="button" class="btn btn-primary">Back to safety</button>
+      <button id="proceed-btn" type="button" class="btn btn-danger">Proceed anyway (not recommended)</button>
+      <p id="proceed-warning" class="proceed-warning" hidden>
+        This site was flagged as potentially dangerous. Are you sure you want
+        to continue? It may attempt to steal personal information, passwords,
+        or payment details.
+        <button id="proceed-confirm-btn" type="button" class="btn btn-danger btn-small">
+          Yes, take me there
+        </button>
+      </p>
     </div>
   </main>
 

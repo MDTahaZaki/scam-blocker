@@ -70,6 +70,24 @@ const BLOCKLIST_REFRESH_MINUTES = 60;
 const BLOCKLIST_STORAGE_KEY = 'blocklist';
 const BLOCKPAGE_PATH = 'blockpage/block.html';
 
+const SAFE_BROWSING_CACHE_KEY = 'safeBrowsingCache';
+const SAFE_BROWSING_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const SAFE_BROWSING_THREAT_TYPES = [
+  'MALWARE',
+  'SOCIAL_ENGINEERING',
+  'UNWANTED_SOFTWARE',
+  'POTENTIALLY_HARMFUL_APPLICATION'
+];
+
+const TEMP_WHITELIST_KEY = 'temporaryWhitelist';
+const TEMP_WHITELIST_DURATION_MS = 24 * 60 * 60 * 1000;
+
+const SETTINGS_DEFAULTS = {
+  safeBrowsingEnabled: false,
+  safeBrowsingApiKey: '',
+  sensitivity: 2
+};
+
 // Per-tab last-known status, used by the popup. Cleared when the tab closes.
 const tabStatus = new Map();
 
@@ -112,9 +130,113 @@ function isExtensionOrInternalUrl(url) {
   return /^(chrome|chrome-extension|edge|about|devtools|file):/i.test(url);
 }
 
+function safeHostname(url) {
+  try {
+    return new URL(url).hostname.toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
 async function getStoredBlocklist() {
   const { [BLOCKLIST_STORAGE_KEY]: blocklist = [] } = await chrome.storage.local.get(BLOCKLIST_STORAGE_KEY);
   return blocklist;
+}
+
+async function getSettings() {
+  const stored = await chrome.storage.local.get(Object.keys(SETTINGS_DEFAULTS));
+  return { ...SETTINGS_DEFAULTS, ...stored };
+}
+
+// ---- Temporary whitelist ("Proceed anyway" from the block page) ------
+
+async function getTemporaryWhitelist() {
+  const { [TEMP_WHITELIST_KEY]: entries = [] } = await chrome.storage.local.get(TEMP_WHITELIST_KEY);
+  const now = Date.now();
+  const valid = entries.filter((entry) => entry && entry.expiresAt > now);
+  if (valid.length !== entries.length) {
+    await chrome.storage.local.set({ [TEMP_WHITELIST_KEY]: valid });
+  }
+  return valid;
+}
+
+function isTemporarilyWhitelisted(hostname, whitelist) {
+  return whitelist.some((entry) => entry.hostname === hostname);
+}
+
+async function addToTemporaryWhitelist(hostname) {
+  const whitelist = await getTemporaryWhitelist();
+  const filtered = whitelist.filter((entry) => entry.hostname !== hostname);
+  filtered.push({ hostname, expiresAt: Date.now() + TEMP_WHITELIST_DURATION_MS });
+  await chrome.storage.local.set({ [TEMP_WHITELIST_KEY]: filtered });
+}
+
+// ---- Google Safe Browsing (Lookup API v4) -----------------------------
+
+async function getSafeBrowsingCache() {
+  const { [SAFE_BROWSING_CACHE_KEY]: cache = {} } = await chrome.storage.local.get(SAFE_BROWSING_CACHE_KEY);
+  return cache;
+}
+
+async function setSafeBrowsingCacheEntry(url, isThreat) {
+  const cache = await getSafeBrowsingCache();
+  const now = Date.now();
+  cache[url] = { isThreat, checkedAt: now };
+
+  // Prune expired entries so the cache doesn't grow unbounded.
+  for (const key of Object.keys(cache)) {
+    if (now - cache[key].checkedAt >= SAFE_BROWSING_CACHE_TTL_MS) {
+      delete cache[key];
+    }
+  }
+
+  await chrome.storage.local.set({ [SAFE_BROWSING_CACHE_KEY]: cache });
+}
+
+// Looks up a single URL against Google Safe Browsing. Never throws: any
+// misconfiguration or network failure resolves to `{ checked: false }` so
+// callers can silently fall back to heuristics-only detection.
+async function checkWithSafeBrowsing(url, apiKey) {
+  if (!apiKey) return { checked: false, isThreat: false };
+
+  const cache = await getSafeBrowsingCache();
+  const cached = cache[url];
+  if (cached && Date.now() - cached.checkedAt < SAFE_BROWSING_CACHE_TTL_MS) {
+    return { checked: true, isThreat: cached.isThreat, fromCache: true };
+  }
+
+  try {
+    const response = await fetch(
+      `https://safebrowsing.googleapis.com/v4/threatMatches:find?key=${encodeURIComponent(apiKey)}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          client: { clientId: 'scam-link-detector-extension', clientVersion: '1.0.0' },
+          threatInfo: {
+            threatTypes: SAFE_BROWSING_THREAT_TYPES,
+            platformTypes: ['ANY_PLATFORM'],
+            threatEntryTypes: ['URL'],
+            threatEntries: [{ url }]
+          }
+        })
+      }
+    );
+
+    if (!response.ok) {
+      console.warn('[ScamBlocker] Safe Browsing API returned an error:', response.status);
+      return { checked: false, isThreat: false };
+    }
+
+    const data = await response.json();
+    const isThreat = Array.isArray(data.matches) && data.matches.length > 0;
+    await setSafeBrowsingCacheEntry(url, isThreat);
+
+    return { checked: true, isThreat };
+  } catch (err) {
+    console.warn('[ScamBlocker] Safe Browsing request failed:', err && err.message);
+    return { checked: false, isThreat: false };
+  }
 }
 
 function matchesBlocklist(url, blocklist) {
@@ -137,17 +259,36 @@ function matchesBlocklist(url, blocklist) {
 }
 
 async function evaluateUrl(url) {
+  const settings = await getSettings();
+
+  const hostname = safeHostname(url);
+  if (hostname) {
+    const whitelist = await getTemporaryWhitelist();
+    if (isTemporarilyWhitelisted(hostname, whitelist)) {
+      return { isDangerous: false, reasons: [], whitelisted: true };
+    }
+  }
+
   const blocklist = await getStoredBlocklist();
   const inBlocklist = matchesBlocklist(url, blocklist);
-  const heuristics = HeuristicsUtil.checkUrl(url);
+  const heuristics = HeuristicsUtil.checkUrl(url, settings.sensitivity);
 
   const reasons = [...heuristics.reasons];
   if (inBlocklist) reasons.unshift('URL matches known scam blocklist');
 
-  return {
-    isDangerous: inBlocklist || heuristics.isScam,
-    reasons
-  };
+  let isDangerous = inBlocklist || heuristics.isScam;
+
+  // Safe Browsing is an extra, optional cloud check: only spend a lookup
+  // (and API quota) on URLs local detection didn't already flag.
+  if (!isDangerous && settings.safeBrowsingEnabled && settings.safeBrowsingApiKey) {
+    const sb = await checkWithSafeBrowsing(url, settings.safeBrowsingApiKey);
+    if (sb.checked && sb.isThreat) {
+      isDangerous = true;
+      reasons.push('Google Safe Browsing flagged this site');
+    }
+  }
+
+  return { isDangerous, reasons };
 }
 
 function reportScan(url, isScam) {
@@ -257,6 +398,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === 'REPORT_URL') {
     reportUrlToFirebase(message.url).then(sendResponse);
+    return true; // keep the message channel open for the async sendResponse
+  }
+
+  if (message.type === 'PROCEED_ANYWAY') {
+    // Sent from the block page's "Proceed anyway" button: whitelists the
+    // domain locally for 24h so the next navigation isn't re-blocked.
+    const hostname = safeHostname(message.url || '');
+    if (!hostname) {
+      sendResponse({ success: false, error: 'Invalid URL.' });
+      return undefined;
+    }
+    addToTemporaryWhitelist(hostname).then(() => {
+      const tabId = sender.tab && sender.tab.id;
+      if (typeof tabId === 'number') tabStatus.delete(tabId);
+      sendResponse({ success: true });
+    });
     return true; // keep the message channel open for the async sendResponse
   }
 

@@ -12,22 +12,22 @@ function getQueryParams() {
   };
 }
 
-function render() {
-  const { url, reasons } = getQueryParams();
+const { url: blockedUrl, reasons: blockedReasons } = getQueryParams();
 
-  document.getElementById('blocked-url').textContent = url;
+function render() {
+  document.getElementById('blocked-url').textContent = blockedUrl;
 
   const list = document.getElementById('reasons-list');
   list.innerHTML = '';
 
-  if (reasons.length === 0) {
+  if (blockedReasons.length === 0) {
     const li = document.createElement('li');
     li.textContent = 'This URL matched our scam detection rules.';
     list.appendChild(li);
     return;
   }
 
-  reasons.forEach((reason) => {
+  blockedReasons.forEach((reason) => {
     const li = document.createElement('li');
     li.textContent = reason;
     list.appendChild(li);
@@ -49,5 +49,33 @@ function goBack() {
   }
 }
 
+// Two-step confirmation instead of a native confirm() dialog: the first
+// click reveals an explicit warning + a second button, so leaving the
+// block page always requires a deliberate second action.
+function showProceedWarning() {
+  document.getElementById('proceed-warning').hidden = false;
+  document.getElementById('proceed-btn').hidden = true;
+}
+
+function proceedAnyway() {
+  if (!blockedUrl) return;
+
+  const confirmBtn = document.getElementById('proceed-confirm-btn');
+  confirmBtn.disabled = true;
+  confirmBtn.textContent = 'Loading…';
+
+  chrome.runtime.sendMessage({ type: 'PROCEED_ANYWAY', url: blockedUrl }, (response) => {
+    if (chrome.runtime.lastError || !response || !response.success) {
+      confirmBtn.disabled = false;
+      confirmBtn.textContent = 'Yes, take me there';
+      return;
+    }
+    // The domain is now temporarily whitelisted (24h) — navigate immediately.
+    window.location.href = blockedUrl;
+  });
+}
+
 document.getElementById('go-back-btn').addEventListener('click', goBack);
+document.getElementById('proceed-btn').addEventListener('click', showProceedWarning);
+document.getElementById('proceed-confirm-btn').addEventListener('click', proceedAnyway);
 render();
