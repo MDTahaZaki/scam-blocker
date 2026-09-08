@@ -21,8 +21,9 @@ service cloud.firestore {
       allow write: if false;
     }
 
-    // Aggregate scan stats used by the dashboard. Written only by the
-    // incrementScan Cloud Function.
+    // Aggregate scan/block/report counters used by the dashboard (a single
+    // `stats/global` document: totalScans, totalBlocked, totalReported).
+    // Public read, written only by the incrementScan Cloud Function.
     match /stats/{docId} {
       allow read: if true;
       allow write: if false;

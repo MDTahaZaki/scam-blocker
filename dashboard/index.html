@@ -12,42 +12,52 @@
   </header>
 
   <main>
+    <!-- Aggregate counters from the public `stats/global` document, kept
+         up to date by the incrementScan Cloud Function. `reported_urls` is
+         admin-only, so nothing on this page reads it directly. -->
     <section class="stats-row">
       <div class="stat-card">
-        <span class="stat-value" id="reports-24h">–</span>
-        <span class="stat-label">Reports in last 24h</span>
+        <span class="stat-value" id="stat-scans">–</span>
+        <span class="stat-label">Total scans</span>
       </div>
       <div class="stat-card">
-        <span class="stat-value" id="total-blocklist">–</span>
-        <span class="stat-label">URLs in blocklist</span>
+        <span class="stat-value" id="stat-blocked">–</span>
+        <span class="stat-label">Total blocked</span>
       </div>
-    </section>
-
-    <section class="chart-section">
-      <h2>Reports per hour (last 24h)</h2>
-      <canvas id="reports-chart" height="100"></canvas>
+      <div class="stat-card">
+        <span class="stat-value" id="stat-reported">–</span>
+        <span class="stat-label">Total reported</span>
+      </div>
     </section>
 
     <section class="table-section">
-      <h2>Recent reported URLs</h2>
-      <table id="recent-table">
+      <div class="table-section__header">
+        <h2>Recently blocked URLs</h2>
+        <button id="add-test-entry-btn" type="button">Add test blocklist entry</button>
+      </div>
+      <p id="add-test-entry-message" class="inline-message" hidden></p>
+      <table id="blocklist-table">
         <thead>
           <tr>
             <th>URL</th>
-            <th>Reported at</th>
+            <th>Date added</th>
           </tr>
         </thead>
-        <tbody id="recent-table-body">
+        <tbody id="blocklist-table-body">
           <tr><td colspan="2">Loading&hellip;</td></tr>
         </tbody>
       </table>
     </section>
   </main>
 
-  <!-- Firebase (compat SDK — no build step required) -->
+  <!-- Firebase (compat SDK — no build step required). Auth + Functions are
+       needed alongside Firestore because "Add test blocklist entry" calls
+       the addTestBlocklistEntry callable, which requires a signed-in
+       (anonymous is fine) caller. -->
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-functions-compat.js"></script>
   <script src="dashboard.js"></script>
 </body>
 </html>

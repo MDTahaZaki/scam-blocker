@@ -70,6 +70,43 @@ main {
   font-size: 15px;
 }
 
+.table-section__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.table-section__header h2 {
+  margin: 0;
+}
+
+#add-test-entry-btn {
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #ffffff;
+  background: #d9342b;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+#add-test-entry-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.inline-message {
+  margin: 12px 0 0;
+  font-size: 13px;
+  color: #16794e;
+}
+
+.inline-message.error {
+  color: #d9342b;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;

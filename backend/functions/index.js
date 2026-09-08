@@ -8,6 +8,7 @@ const FieldValue = admin.firestore.FieldValue;
 const REPORTS_COLLECTION = 'reported_urls';
 const BLOCKLIST_COLLECTION = 'blocklist';
 const STATS_COLLECTION = 'stats';
+const STATS_DOC = 'global';
 const REPORT_THRESHOLD = 3;
 const BLOCKLIST_CACHE_MS = 5 * 60 * 1000;
 
@@ -89,26 +90,64 @@ exports.getBlocklist = functions.https.onCall(async () => {
 });
 
 /**
- * Callable: incrementScan({ url, isDangerous })
- * Optional stats hook the extension can call whenever it evaluates a URL.
- * Best-effort: failures are logged but never surfaced to the caller.
+ * Callable: incrementScan({ isScam, isReport })
+ * Aggregate stats hook, written to a single `stats/global` document so the
+ * public dashboard can read one doc instead of scanning `reported_urls`
+ * (which is admin-only). Best-effort: failures are logged but never
+ * surfaced to the caller, since stats must never block URL evaluation or
+ * reporting.
+ *
+ * - `{ isReport: true }` (called after a successful reportUrl): increments
+ *   `totalReported` only.
+ * - Otherwise (called after every URL check): increments `totalScans`
+ *   always, and `totalBlocked` too when `isScam` is true.
  */
 exports.incrementScan = functions.https.onCall(async (data) => {
+  const isReport = Boolean(data && data.isReport);
+  const isScam = Boolean(data && data.isScam);
+
+  const update = isReport
+    ? { totalReported: FieldValue.increment(1) }
+    : {
+        totalScans: FieldValue.increment(1),
+        totalBlocked: FieldValue.increment(isScam ? 1 : 0)
+      };
+
   try {
-    const isDangerous = Boolean(data && data.isDangerous);
     await db
       .collection(STATS_COLLECTION)
-      .doc('scans')
-      .set(
-        {
-          totalScans: FieldValue.increment(1),
-          dangerousScans: FieldValue.increment(isDangerous ? 1 : 0),
-          lastScanAt: FieldValue.serverTimestamp()
-        },
-        { merge: true }
-      );
+      .doc(STATS_DOC)
+      .set(update, { merge: true });
   } catch (err) {
     console.error('incrementScan failed', err);
   }
   return { success: true };
+});
+
+/**
+ * Callable: addTestBlocklistEntry()
+ * Demo/testing helper for the dashboard: adds a fixed sample URL to the
+ * public `blocklist` collection so the dashboard's blocklist table has
+ * something to show without needing 3 real reports first. Requires an
+ * authenticated caller (anonymous auth is fine) to keep it from being
+ * abused by anonymous scripts hammering the endpoint; it is not otherwise
+ * restricted to admins since it only ever writes one fixed, non-sensitive
+ * document.
+ */
+exports.addTestBlocklistEntry = functions.https.onCall(async (data, context) => {
+  if (!context.auth) {
+    throw new functions.https.HttpsError(
+      'unauthenticated',
+      'You must be signed in (anonymous auth is fine) to add a test entry.'
+    );
+  }
+
+  const url = 'https://example-phishing.com';
+  await db.collection(BLOCKLIST_COLLECTION).doc(urlToDocId(url)).set({
+    url,
+    date_added: FieldValue.serverTimestamp()
+  });
+  blocklistCache = { data: null, expiresAt: 0 }; // invalidate cache
+
+  return { success: true, url };
 });

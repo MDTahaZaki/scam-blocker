@@ -1,6 +1,7 @@
 // Replace with your own Firebase project config (Project settings -> General
 // -> Your apps -> SDK setup and configuration). This is a placeholder demo
-// config and will not work until you swap in real values.
+// config and will not work until you swap in real values — same config
+// object as extension/firebase-config.js.
 const firebaseConfig = {
   apiKey: 'DEMO_API_KEY',
   authDomain: 'demo-project.firebaseapp.com',
@@ -11,113 +12,126 @@ const firebaseConfig = {
 };
 
 firebase.initializeApp(firebaseConfig);
+const auth = firebase.auth();
 const db = firebase.firestore();
+const cloudFunctions = firebase.functions();
 
-const reports24hEl = document.getElementById('reports-24h');
-const totalBlocklistEl = document.getElementById('total-blocklist');
-const recentTableBody = document.getElementById('recent-table-body');
+const statScansEl = document.getElementById('stat-scans');
+const statBlockedEl = document.getElementById('stat-blocked');
+const statReportedEl = document.getElementById('stat-reported');
+const blocklistTableBody = document.getElementById('blocklist-table-body');
+const addTestEntryBtn = document.getElementById('add-test-entry-btn');
+const addTestEntryMessage = document.getElementById('add-test-entry-message');
 
 function formatTimestamp(ts) {
   if (!ts || !ts.toDate) return '—';
   return ts.toDate().toLocaleString();
 }
 
-function renderRecentTable(reports) {
-  recentTableBody.innerHTML = '';
+function formatCount(value) {
+  return typeof value === 'number' ? value.toLocaleString() : '0';
+}
 
-  if (reports.length === 0) {
-    recentTableBody.innerHTML = '<tr><td colspan="2">No reports yet.</td></tr>';
+// `addTestBlocklistEntry` requires an authenticated caller (see
+// backend/functions/index.js), so the dashboard signs in anonymously the
+// same way the extension does — no login UI needed for this demo.
+function ensureSignedIn() {
+  return new Promise((resolve) => {
+    const unsubscribe = auth.onAuthStateChanged((user) => {
+      unsubscribe();
+      if (user) {
+        resolve(user);
+        return;
+      }
+      auth
+        .signInAnonymously()
+        .then((credential) => resolve(credential.user))
+        .catch((err) => {
+          console.warn('Anonymous sign-in failed:', err && err.message);
+          resolve(null);
+        });
+    });
+  });
+}
+
+// `stats/global` is public read (see backend/firestore.rules) and written
+// only by the incrementScan Cloud Function.
+async function loadStats() {
+  try {
+    const snap = await db.collection('stats').doc('global').get();
+    const stats = snap.data() || {};
+    statScansEl.textContent = formatCount(stats.totalScans);
+    statBlockedEl.textContent = formatCount(stats.totalBlocked);
+    statReportedEl.textContent = formatCount(stats.totalReported);
+  } catch (err) {
+    console.error('Failed to load stats/global', err);
+    statScansEl.textContent = '—';
+    statBlockedEl.textContent = '—';
+    statReportedEl.textContent = '—';
+  }
+}
+
+function renderBlocklistTable(entries) {
+  blocklistTableBody.innerHTML = '';
+
+  if (entries.length === 0) {
+    blocklistTableBody.innerHTML = '<tr><td colspan="2">No blocklist entries yet.</td></tr>';
     return;
   }
 
-  reports.slice(0, 20).forEach((report) => {
+  entries.forEach((entry) => {
     const tr = document.createElement('tr');
 
     const urlTd = document.createElement('td');
-    urlTd.textContent = report.url;
+    urlTd.textContent = entry.url;
 
-    const timeTd = document.createElement('td');
-    timeTd.textContent = formatTimestamp(report.timestamp);
+    const dateTd = document.createElement('td');
+    dateTd.textContent = formatTimestamp(entry.date_added);
 
     tr.appendChild(urlTd);
-    tr.appendChild(timeTd);
-    recentTableBody.appendChild(tr);
+    tr.appendChild(dateTd);
+    blocklistTableBody.appendChild(tr);
   });
 }
 
-function renderChart(reports, since) {
-  const buckets = new Array(24).fill(0);
-  const now = Date.now();
-
-  reports.forEach((report) => {
-    if (!report.timestamp || !report.timestamp.toDate) return;
-    const reportedAt = report.timestamp.toDate().getTime();
-    const hoursAgo = Math.floor((now - reportedAt) / (60 * 60 * 1000));
-    if (hoursAgo >= 0 && hoursAgo < 24) {
-      buckets[23 - hoursAgo] += 1;
-    }
-  });
-
-  const labels = buckets.map((_, i) => `${23 - i}h ago`).reverse();
-
-  new Chart(document.getElementById('reports-chart'), {
-    type: 'bar',
-    data: {
-      labels,
-      datasets: [
-        {
-          label: 'Reports',
-          data: buckets,
-          backgroundColor: '#d9342b'
-        }
-      ]
-    },
-    options: {
-      responsive: true,
-      scales: {
-        y: { beginAtZero: true, ticks: { precision: 0 } }
-      },
-      plugins: {
-        legend: { display: false }
-      }
-    }
-  });
-}
-
-// `blocklist` is publicly readable (see backend/firestore.rules), but
-// `reported_urls` is now locked down to Cloud-Function-only access — no
-// client, including this dashboard, can read it directly any more. That
-// query is expected to fail with permission-denied until a dedicated
-// dashboard-facing callable (e.g. getRecentReports) is added; the blocklist
-// stats still load normally in the meantime.
-async function loadDashboard() {
-  const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
-
+// `blocklist` is public read (see backend/firestore.rules).
+async function loadBlocklist() {
   try {
-    const blocklistSnap = await db.collection('blocklist').get();
-    totalBlocklistEl.textContent = blocklistSnap.size;
+    const snap = await db.collection('blocklist').orderBy('date_added', 'desc').limit(20).get();
+    renderBlocklistTable(snap.docs.map((doc) => doc.data()));
   } catch (err) {
     console.error('Failed to load blocklist', err);
-    totalBlocklistEl.textContent = '—';
-  }
-
-  try {
-    const reportsSnap = await db
-      .collection('reported_urls')
-      .where('timestamp', '>=', since)
-      .orderBy('timestamp', 'desc')
-      .get();
-
-    const reports = reportsSnap.docs.map((doc) => doc.data());
-    reports24hEl.textContent = reports.length;
-    renderRecentTable(reports);
-    renderChart(reports, since);
-  } catch (err) {
-    console.warn('reported_urls is not directly readable by clients (expected — see firestore.rules):', err.message);
-    reports24hEl.textContent = '—';
-    recentTableBody.innerHTML =
-      '<tr><td colspan="2">Recent-reports view requires a dashboard-facing Cloud Function (not yet implemented).</td></tr>';
+    blocklistTableBody.innerHTML = '<tr><td colspan="2">Failed to load blocklist.</td></tr>';
   }
 }
 
+function loadDashboard() {
+  loadStats();
+  loadBlocklist();
+}
+
+async function addTestBlocklistEntry() {
+  addTestEntryBtn.disabled = true;
+  addTestEntryMessage.classList.remove('error');
+  addTestEntryMessage.textContent = 'Adding test entry…';
+  addTestEntryMessage.hidden = false;
+
+  try {
+    const user = await ensureSignedIn();
+    if (!user) throw new Error('Could not authenticate with Firebase.');
+
+    const addEntry = cloudFunctions.httpsCallable('addTestBlocklistEntry');
+    const result = await addEntry();
+
+    addTestEntryMessage.textContent = `Added ${result.data.url} to the blocklist.`;
+    await loadBlocklist();
+  } catch (err) {
+    addTestEntryMessage.textContent = (err && err.message) || 'Failed to add test entry.';
+    addTestEntryMessage.classList.add('error');
+  } finally {
+    addTestEntryBtn.disabled = false;
+  }
+}
+
+addTestEntryBtn.addEventListener('click', addTestBlocklistEntry);
 loadDashboard();

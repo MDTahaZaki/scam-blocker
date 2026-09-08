@@ -43,7 +43,7 @@ scam-blocker/
    cd backend/functions
    npm install
    cd ..
-   firebase deploy --only functions,firestore:rules
+   firebase deploy --only firestore:rules,functions
    ```
 7. In the Firebase console, go to **Project settings → General → Your apps**,
    add a **Web app**, and copy the resulting config object.
@@ -66,14 +66,22 @@ scam-blocker/
    a `reported_urls` document should appear, and after 3 distinct anonymous
    users report the same URL it should also appear in `blocklist`.
 
-The backend exposes three **callable** functions (not raw HTTP endpoints —
+The backend exposes four **callable** functions (not raw HTTP endpoints —
 the Firebase Functions SDK handles auth, CORS, and serialization):
 - `reportUrl({ url })` — requires an authenticated (anonymous is fine)
   caller; records the report and auto-blocklists a URL once 3 distinct
   uids have reported it.
 - `getBlocklist()` — public, no auth required; returns the blocklist as a
   plain array of URL strings, cached in-memory server-side for 5 minutes.
-- `incrementScan({ url, isDangerous })` — optional stats hook, best-effort.
+- `incrementScan({ isScam, isReport })` — stats hook, best-effort, writes
+  to the single `stats/global` document: increments `totalScans` (and
+  `totalBlocked` when `isScam` is true) on every URL check, or
+  `totalReported` when called with `{ isReport: true }` after a
+  successful `reportUrl`.
+- `addTestBlocklistEntry()` — requires an authenticated (anonymous is
+  fine) caller; adds a fixed demo URL (`https://example-phishing.com`) to
+  `blocklist`, used by the dashboard's "Add test blocklist entry" button
+  so there's something to look at without waiting for 3 real reports.
 
 ### Manifest V3 and remote code
 
@@ -105,18 +113,30 @@ falls back to local heuristics plus whatever blocklist is already cached.
 
 1. In `dashboard/dashboard.js`, replace the placeholder `firebaseConfig`
    object with your project's real config (Firebase console → Project
-   settings → General → Your apps → Web app → SDK setup and configuration).
-2. Deploy as static hosting, e.g. with Firebase Hosting:
+   settings → General → Your apps → Web app → SDK setup and configuration)
+   — same values as `extension/firebase-config.js`. Also confirm
+   Authentication → Sign-in method → **Anonymous** is enabled (see step 3
+   above); the dashboard signs in anonymously to call
+   `addTestBlocklistEntry`.
+2. Deploy the updated rules and functions, then hosting:
    ```bash
    cd backend
-   firebase deploy --only hosting
+   firebase deploy --only firestore:rules,functions,hosting
    ```
    (`backend/firebase.json` already points hosting at `../dashboard`.)
-3. The dashboard reads `blocklist` directly from Firestore (public read,
-   per `firestore.rules`). `reported_urls` is locked down to Cloud
-   Functions only (no direct client read), so the "reports per hour" chart
-   and recent-reports table will show a placeholder until a dedicated
-   dashboard-facing callable (e.g. `getRecentReports`) is added.
+3. Open the deployed dashboard URL (or `dashboard/index.html` locally via
+   any static server — `file://` won't work with Firebase Auth). You
+   should see:
+   - Three counters (**Total scans**, **Total blocked**, **Total
+     reported**) read from the public `stats/global` document.
+   - A table of the 20 most-recently-added `blocklist` entries.
+   - An **Add test blocklist entry** button that calls the
+     `addTestBlocklistEntry` callable and adds
+     `https://example-phishing.com` to the blocklist, refreshing the table.
+4. To see the counters move, use the extension for a bit (each navigation
+   calls `incrementScan`) and submit a report from the popup, then reload
+   the dashboard. `reported_urls` itself is never read by the dashboard —
+   it stays admin-only, per `firestore.rules`.
 
 ## How detection works
 
@@ -146,7 +166,10 @@ falls back to local heuristics plus whatever blocklist is already cached.
 - The popup (`popup.js`) doesn't load the Firebase SDK itself. Reporting a
   URL sends a `REPORT_URL` message to `background.js`, which is already
   Firebase-initialized and holds the auth session — this keeps there being
-  exactly one place in the extension that loads remote SDK code.
+  exactly one place in the extension that loads remote SDK code. For the
+  same reason, the `incrementScan({ isReport: true })` stats call that
+  fires after a successful report also lives in `background.js`
+  (`reportUrlToFirebase`) rather than in `popup.js`.
 - `reported_urls` documents are keyed by a stable id derived from the URL
   (base64 of the URL string) rather than being append-only, so repeated
   reports of the same URL accumulate on one document (`count` increments,

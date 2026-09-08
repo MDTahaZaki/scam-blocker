@@ -77,6 +77,9 @@ async function loadStatus() {
 function reportCurrentSite() {
   if (!currentTab || !currentTab.url) return;
 
+  // Stats (incrementScan({ isReport: true })) are recorded by background.js
+  // once the report succeeds, not here — popup.js has no Firebase SDK of
+  // its own and delegates the whole report flow via REPORT_URL below.
   reportBtn.disabled = true;
   reportMessage.classList.remove('error');
   reportMessage.textContent = 'Submitting report…';

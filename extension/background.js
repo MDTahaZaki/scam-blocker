@@ -150,10 +150,10 @@ async function evaluateUrl(url) {
   };
 }
 
-function reportScan(url, isDangerous) {
+function reportScan(url, isScam) {
   if (!firebaseReady) return;
   ensureSignedIn()
-    .then(() => cloudFunctions.httpsCallable('incrementScan')({ url, isDangerous }))
+    .then(() => cloudFunctions.httpsCallable('incrementScan')({ isScam }))
     .catch(() => {
       // Stats reporting is best-effort; ignore failures.
     });
@@ -182,6 +182,16 @@ async function reportUrlToFirebase(url) {
 
     const reportUrl = cloudFunctions.httpsCallable('reportUrl');
     const result = await reportUrl({ url });
+
+    // Best-effort stats bump. Done here rather than in popup.js so that
+    // background.js remains the only place that loads the Firebase SDK
+    // (see the MV3 remote-code note at the top of this file); popup.js
+    // already delegates reporting to background.js via REPORT_URL, so this
+    // fires for every successful report regardless of which UI triggered it.
+    cloudFunctions
+      .httpsCallable('incrementScan')({ isReport: true })
+      .catch(() => {});
+
     return { success: true, message: (result.data && result.data.message) || 'Reported successfully.' };
   } catch (err) {
     return { success: false, error: (err && err.message) || 'Failed to report URL.' };
