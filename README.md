@@ -14,7 +14,8 @@ and can be loaded/served as-is.
 scam-blocker/
 ├── extension/     Chrome MV3 extension (load unpacked)
 ├── backend/       Firebase Cloud Functions + Firestore rules
-└── dashboard/     Static dashboard (Chart.js), deployable to Firebase Hosting
+├── dashboard/     Static dashboard (Chart.js), deployable to Firebase Hosting
+└── mobile/        Installable PWA (paste-and-check + Android share target)
 ```
 
 ## 1. Firebase Setup
@@ -181,6 +182,66 @@ to call a URL a scam (see `SENSITIVITY_THRESHOLDS` in
    calls `incrementScan`) and submit a report from the popup, then reload
    the dashboard. `reported_urls` itself is never read by the dashboard —
    it stays admin-only, per `firestore.rules`.
+
+## 5. Mobile PWA (Android/iOS)
+
+`mobile/` is a plain-JS, no-build-step Progressive Web App that lets users
+check a link on their phone: paste a URL and tap **Check Link**, or (on
+Android) share a link from any app (browser, WhatsApp, SMS, ...) straight
+into SafeLink via the [Web Share Target
+API](https://developer.mozilla.org/en-US/docs/Web/Manifest/share_target).
+It runs the exact same heuristics engine as the extension
+(`mobile/heuristics.js` is a duplicate of `extension/utils/heuristics.js`)
+and talks to the same Firebase backend (`getBlocklist`, `reportUrl`) — no
+separate backend is needed.
+
+### Configure
+
+1. Copy the same values from `extension/firebase-config.js` into
+   `mobile/firebase-config.js`. As with the extension, leaving `apiKey`
+   empty runs the PWA in local-only mode: heuristic checking still works,
+   but blocklist sync and **Report as Scam** are disabled (a warning
+   banner explains this in the UI).
+2. In `mobile/app.js`, set `DASHBOARD_URL` to your deployed dashboard URL
+   (same value as `extension/popup/popup.js`'s `DASHBOARD_URL`).
+3. `mobile/icon-192.png` and `mobile/icon-512.png` are solid-color
+   placeholders — swap them for real branded app icons before sharing the
+   install link with real users (192×192 and 512×512 PNGs, referenced from
+   `mobile/manifest.webmanifest`).
+
+### Host it
+
+Any static host over **HTTPS** works — the Web Share Target API requires
+it, and `file://` won't run the service worker or Firebase Auth. Two easy
+options:
+
+- **Firebase Hosting** (same project as the backend): `backend/firebase.json`
+  currently points `hosting.public` at `../dashboard` only. To serve
+  `mobile/` from the same site, either change `hosting.public` to `..`
+  (the `scam-blocker/` root, so both `/dashboard/` and `/mobile/` deploy
+  together) and redeploy with `firebase deploy --only hosting`, or add a
+  [second Hosting site](https://firebase.google.com/docs/hosting/multisites)
+  dedicated to `mobile/`.
+- **GitHub Pages / Netlify**: point either at the repo (or just the
+  `mobile/` folder) and deploy — no build step required, since it's plain
+  HTML/CSS/JS.
+
+### Install and use on Android
+
+1. Open the hosted URL in Chrome for Android.
+2. Chrome menu (⋮) → **Add to Home screen** (or **Install app**, if
+   Chrome offers the install prompt automatically).
+3. Once installed, SafeLink appears as a registered **share target**: from
+   any app's share sheet (browser, WhatsApp, SMS, etc.), share a link and
+   pick **SafeLink** — it opens straight to the result for that URL
+   (`mobile/app.js`'s `getSharedUrl()` reads the `url` query param the
+   share target passes, falling back to a URL found inside `text`/`title`
+   for apps that only share those).
+
+**iOS Safari does not support the Web Share Target API**, so the "share
+into the app" flow isn't available there — iOS users can still add the
+PWA to their home screen and use the paste-and-check flow (copy a link,
+open SafeLink, paste it into the input, tap **Check Link**).
 
 ## How detection works
 

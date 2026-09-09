@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SafeLink AI – Scam Detector</title>
+  <meta name="theme-color" content="#d32f2f" />
+  <meta name="description" content="Paste a link or share it from any app to check it for scam/phishing signals." />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" href="icon-192.png" />
+  <link rel="apple-touch-icon" href="icon-192.png" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <h1>SafeLink AI</h1>
+    <p class="subtitle">Scam &amp; phishing link detector</p>
+  </header>
+
+  <main>
+    <p id="firebase-warning" class="banner banner--warning" hidden>
+      Firebase is not configured — running in local-only mode. Heuristic
+      checking still works, but the blocklist won't be up to date and
+      reporting is disabled.
+    </p>
+
+    <section class="check-form">
+      <label for="url-input">Link to check</label>
+      <input
+        type="url"
+        id="url-input"
+        inputmode="url"
+        autocomplete="off"
+        autocapitalize="off"
+        autocorrect="off"
+        spellcheck="false"
+        placeholder="Paste or type a URL, e.g. https://example.com"
+      />
+      <button type="button" id="check-btn">Check Link</button>
+    </section>
+
+    <section id="result-section" class="result" hidden>
+      <div id="result-badge" class="badge">
+        <span id="badge-label"></span>
+      </div>
+      <p id="result-url" class="result-url"></p>
+      <ul id="reasons-list" class="reasons-list" hidden></ul>
+
+      <button type="button" id="report-btn" disabled>Report as Scam</button>
+      <p id="report-message" class="message" hidden></p>
+    </section>
+
+    <p id="error-message" class="banner banner--error" hidden></p>
+  </main>
+
+  <footer>
+    <a id="dashboard-link" href="#" target="_blank" rel="noopener">Open Dashboard</a>
+  </footer>
+
+  <!-- Firebase (compat SDK — no build step required). Same version and
+       pattern as extension/background.js and dashboard/index.html so all
+       three surfaces talk to the project the same way. -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-functions-compat.js"></script>
+  <script src="firebase-config.js"></script>
+  <script src="heuristics.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
