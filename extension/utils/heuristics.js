@@ -27,13 +27,37 @@
     'gift', 'prize', 'urgent', 'paypal', 'webscr', 'cmd'
   ];
 
-  const BRAND_NAMES = [
-    'whirlpool', 'paypal', 'amazon', 'google', 'microsoft', 'apple',
-    'netflix', 'facebook', 'instagram', 'chase', 'wellsfargo',
-    'bankofamerica', 'irs', 'dhl', 'fedex', 'ups', 'usps', 'coinbase',
-    'binance', 'ebay', 'walmart'
+  // Official registered domain for each brand, used by findBrandImpersonation
+  // below. A brand missing from this map falls back to "<brand>.com".
+  const OFFICIAL_DOMAINS = {
+    whirlpool: 'whirlpool.com', paypal: 'paypal.com', amazon: 'amazon.com',
+    google: 'google.com', microsoft: 'microsoft.com', apple: 'apple.com',
+    netflix: 'netflix.com', facebook: 'facebook.com', instagram: 'instagram.com',
+    chase: 'chase.com', wellsfargo: 'wellsfargo.com', bankofamerica: 'bankofamerica.com',
+    irs: 'irs.gov', dhl: 'dhl.com', fedex: 'fedex.com', ups: 'ups.com',
+    usps: 'usps.com', coinbase: 'coinbase.com', binance: 'binance.com',
+    ebay: 'ebay.com', walmart: 'walmart.com',
+    sbi: 'onlinesbi.com', hdfc: 'hdfcbank.com', icici: 'icicibank.com',
+    flipkart: 'flipkart.com'
+  };
+  const BRAND_NAMES = Object.keys(OFFICIAL_DOMAINS);
+
+  // Subdomain-only terms typical of fake "tech support" / "customer care"
+  // scam pages (e.g. a fraudulent "vice-support.servicediy.in" posing as an
+  // appliance brand's support line). Deliberately generic rather than tied
+  // to a specific brand list, since this scam pattern reuses the same
+  // playbook against many different real-world brands.
+  const SUPPORT_SCAM_SUBDOMAIN_TERMS = [
+    'support', 'service', 'helpdesk', 'helpline', 'care', 'assist',
+    'technician', 'repair', 'customercare'
   ];
-  const OFFICIAL_TLDS = ['com', 'org', 'net', 'co'];
+  // TLDs treated as "standard" for the support-subdomain check below; a
+  // support/service subdomain sitting on anything outside this short list
+  // is unusual enough to flag. Deliberately narrow — this rule trades some
+  // false positives on legitimate regional businesses (e.g.
+  // support.company.in) for catching this specific scam pattern; see
+  // README limitations.
+  const TRUSTED_SUPPORT_TLDS = ['com', 'org', 'net', 'co', 'gov', 'edu'];
 
   const IPV4_REGEX = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
   const MAX_URL_LENGTH = 120;
@@ -70,22 +94,56 @@
     return (hostname.match(/\d/g) || []).length;
   }
 
-  // Returns the impersonated brand name, or null if none applies.
+  // Returns { brand, officialDomain }, or null if no impersonation applies.
+  // Note: this only exempts hostnames that are the official domain (or a
+  // subdomain of it) — any other TLD/domain combination containing the
+  // brand name is flagged. Earlier versions of this rule also exempted any
+  // two-letter country-code TLD (e.g. "brand-support.xx"), which is exactly
+  // the trick scam domains use to look legitimate, so that exemption was
+  // removed.
   function findBrandImpersonation(hostname) {
-    const brand = BRAND_NAMES.find((b) => hostname.includes(b));
+    // Match against dot/hyphen-separated tokens rather than a raw substring
+    // search — some brand codes are short (e.g. "ups", "sbi"), and a raw
+    // `hostname.includes(brand)` would false-positive on unrelated domains
+    // that merely contain those letters in sequence (e.g. "groups.google.com"
+    // contains "ups"). Short brand codes (<5 chars) require an exact token
+    // match; longer ones may appear as a substring within a token (so
+    // "whirlpool-support.tld" -> token "whirlpool-support" split further by
+    // hyphen already isolates "whirlpool", but "whirlpoolsupport" as one
+    // fused token still matches via substring).
+    const tokens = hostname.split(/[.-]/).filter(Boolean);
+    const brand = BRAND_NAMES.find((b) =>
+      tokens.some((t) => (b.length < 5 ? t === b : t.includes(b)))
+    );
     if (!brand) return null;
 
-    const officialDomain = `${brand}.com`;
+    const officialDomain = OFFICIAL_DOMAINS[brand] || `${brand}.com`;
     if (hostname === officialDomain || hostname.endsWith(`.${officialDomain}`)) {
       return null; // it *is* (a subdomain of) the real thing
     }
 
-    const parts = hostname.split('.').filter(Boolean);
-    const tld = parts[parts.length - 1] || '';
-    const isCountryTld = /^[a-z]{2}$/i.test(tld); // e.g. "uk", "de", "ca"
-    if (OFFICIAL_TLDS.includes(tld) || isCountryTld) return null;
+    return { brand, officialDomain };
+  }
 
-    return brand;
+  // Detects a support/service-style subdomain (e.g. "vice-support",
+  // "helpdesk") sitting on a domain whose TLD isn't one of the common
+  // trusted ones — the pattern used by fake tech-support scam sites that
+  // impersonate a brand's customer care line without using the brand's
+  // name directly in a way SCAM_KEYWORDS or findBrandImpersonation would
+  // catch. Returns the matched subdomain term, or null.
+  function findSupportSubdomainScam(hostname) {
+    const labels = hostname.split('.').filter(Boolean);
+    if (labels.length < 3) return null; // no room for a distinct subdomain
+
+    const tld = labels[labels.length - 1];
+    if (TRUSTED_SUPPORT_TLDS.includes(tld)) return null;
+
+    const subdomainLabels = labels.slice(0, -2);
+    for (const label of subdomainLabels) {
+      const term = SUPPORT_SCAM_SUBDOMAIN_TERMS.find((t) => label.includes(t));
+      if (term) return term;
+    }
+    return null;
   }
 
   // Chrome's URL parser always punycode-encodes non-ASCII hostnames
@@ -157,9 +215,20 @@
       flag(2, `URL contains suspicious keyword(s): ${[...new Set(matchedKeywords)].join(', ')}`);
     }
 
-    const impersonatedBrand = findBrandImpersonation(hostname);
-    if (impersonatedBrand) {
-      flag(3, `Domain references "${impersonatedBrand}" but is not on ${impersonatedBrand}'s official domain`);
+    const impersonation = findBrandImpersonation(hostname);
+    if (impersonation) {
+      flag(
+        3,
+        `Brand name used on non-official domain: references "${impersonation.brand}" but is not ${impersonation.officialDomain} or a subdomain of it`
+      );
+    }
+
+    const supportScamTerm = findSupportSubdomainScam(hostname);
+    if (supportScamTerm) {
+      flag(
+        4,
+        `Subdomain uses a support/service-style term ("${supportScamTerm}") on an unusual top-level domain — a common fake tech-support scam pattern`
+      );
     }
 
     if (hasHomographRisk(hostname)) {

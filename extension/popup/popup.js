@@ -39,6 +39,19 @@ sbKeyLink.href = SAFE_BROWSING_CONSOLE_URL;
 
 let currentTab = null;
 
+// Internal browser pages (chrome://, chrome-extension://, about:, edge://,
+// etc.) have no meaningful "scam" verdict and can't be reported, so the
+// Report button is disabled for them rather than silently failing when
+// clicked.
+const REPORTABLE_SCHEMES = ['http:', 'https:'];
+function isReportableUrl(url) {
+  try {
+    return REPORTABLE_SCHEMES.includes(new URL(url).protocol);
+  } catch (err) {
+    return false;
+  }
+}
+
 // ---- Tabs ---------------------------------------------------------------
 
 tabButtons.forEach((btn) => {
@@ -90,7 +103,16 @@ async function loadStatus() {
 
   if (!tab || !tab.url) {
     renderStatus({ unknown: true });
+    reportBtn.disabled = true;
     return;
+  }
+
+  if (!isReportableUrl(tab.url)) {
+    reportBtn.disabled = true;
+    reportBtn.title = 'This page cannot be reported.';
+  } else {
+    reportBtn.disabled = false;
+    reportBtn.title = '';
   }
 
   chrome.runtime.sendMessage(
@@ -106,7 +128,7 @@ async function loadStatus() {
 }
 
 function reportCurrentSite() {
-  if (!currentTab || !currentTab.url) return;
+  if (!currentTab || !currentTab.url || !isReportableUrl(currentTab.url)) return;
 
   // Stats (incrementScan({ isReport: true })) are recorded by background.js
   // once the report succeeds, not here — popup.js has no Firebase SDK of

@@ -1,0 +1,12 @@
+{
+  "name": "scam-blocker",
+  "version": "1.0.0",
+  "description": "SafeLink AI: Chrome extension, Firebase backend, dashboard, and PWA for detecting and blocking scam/phishing links.",
+  "private": true,
+  "scripts": {
+    "test": "jest"
+  },
+  "devDependencies": {
+    "jest": "^29.0.0"
+  }
+}

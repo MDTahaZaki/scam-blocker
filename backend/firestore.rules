@@ -13,6 +13,15 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // Per-report rate-limit log (one doc per reportUrl call, {uid,
+    // timestamp}), read/written only by the reportUrl Cloud Function via
+    // the Admin SDK to enforce the per-uid hourly report cap. Never exposed
+    // to clients directly.
+    match /report_log/{logId} {
+      allow read: if false;
+      allow write: if false;
+    }
+
     // Blocklist: public read so the extension (which has no signed-in user)
     // can sync it. Writes only ever happen via the reportUrl Cloud Function
     // (Admin SDK), so direct client writes are always denied.

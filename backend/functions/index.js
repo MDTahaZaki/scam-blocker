@@ -11,6 +11,10 @@ const STATS_COLLECTION = 'stats';
 const STATS_DOC = 'global';
 const REPORT_THRESHOLD = 3;
 const BLOCKLIST_CACHE_MS = 5 * 60 * 1000;
+const REPORT_LOG_COLLECTION = 'report_log';
+const MAX_URL_LENGTH = 2000;
+const RATE_LIMIT_MAX_REPORTS = 10;
+const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000; // 1 hour
 
 // In-memory cache shared across warm invocations of getBlocklist.
 let blocklistCache = { data: null, expiresAt: 0 };
@@ -23,11 +27,49 @@ function urlToDocId(url) {
 }
 
 /**
+ * Validates that `value` is a well-formed http(s) URL under MAX_URL_LENGTH
+ * characters, throwing an HttpsError('invalid-argument', ...) otherwise.
+ * Shared by every callable that accepts a URL from the client.
+ */
+function assertValidUrl(value) {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new functions.https.HttpsError('invalid-argument', 'A url string is required.');
+  }
+
+  const url = value.trim();
+  if (url.length > MAX_URL_LENGTH) {
+    throw new functions.https.HttpsError(
+      'invalid-argument',
+      `url must be ${MAX_URL_LENGTH} characters or fewer.`
+    );
+  }
+
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch (err) {
+    throw new functions.https.HttpsError('invalid-argument', 'url must be a valid URL.');
+  }
+
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new functions.https.HttpsError('invalid-argument', 'url must use http or https.');
+  }
+
+  return url;
+}
+
+/**
  * Callable: reportUrl({ url })
  * Requires an authenticated caller (anonymous auth is fine). Records the
  * report on a per-URL document in `reported_urls`, tracking the set of
  * distinct reporter uids. Once 3+ distinct users have reported the same
  * URL, it is promoted into the public `blocklist` collection.
+ *
+ * Rate-limited to REPORT_LOG rows: a caller who has logged
+ * RATE_LIMIT_MAX_REPORTS or more reports (of any URL) in the last
+ * RATE_LIMIT_WINDOW_MS is rejected with 'resource-exhausted', to keep a
+ * single (anonymous, so cheaply re-creatable, but still rate-limitable per
+ * session) uid from spamming the blocklist-promotion threshold.
  */
 exports.reportUrl = functions.https.onCall(async (data, context) => {
   if (!context.auth) {
@@ -37,12 +79,22 @@ exports.reportUrl = functions.https.onCall(async (data, context) => {
     );
   }
 
-  const url = String((data && data.url) || '').trim();
-  if (!url || !/^https?:\/\//i.test(url)) {
-    throw new functions.https.HttpsError('invalid-argument', 'A valid http(s) url is required.');
+  const url = assertValidUrl(data && data.url);
+  const uid = context.auth.uid;
+
+  const cutoff = new Date(Date.now() - RATE_LIMIT_WINDOW_MS);
+  const recentReportsSnap = await db
+    .collection(REPORT_LOG_COLLECTION)
+    .where('uid', '==', uid)
+    .where('timestamp', '>=', cutoff)
+    .get();
+  if (recentReportsSnap.size >= RATE_LIMIT_MAX_REPORTS) {
+    throw new functions.https.HttpsError(
+      'resource-exhausted',
+      `You've reported too many URLs recently. Please try again later.`
+    );
   }
 
-  const uid = context.auth.uid;
   const docId = urlToDocId(url);
   const reportRef = db.collection(REPORTS_COLLECTION).doc(docId);
 
@@ -58,6 +110,11 @@ exports.reportUrl = functions.https.onCall(async (data, context) => {
     },
     { merge: true }
   );
+
+  // Logged separately (rather than reusing reported_urls' per-URL
+  // `timestamp`, which reflects the last report of that URL by *any* uid)
+  // so the rate-limit query above can count this specific uid's reports.
+  await db.collection(REPORT_LOG_COLLECTION).add({ uid, timestamp: FieldValue.serverTimestamp() });
 
   const reportSnap = await reportRef.get();
   const reportedBy = (reportSnap.data() && reportSnap.data().reportedBy) || [];
